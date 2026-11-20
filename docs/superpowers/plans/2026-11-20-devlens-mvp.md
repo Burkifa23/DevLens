@@ -14,6 +14,7 @@
 
 - Stack is Next.js + TypeScript end to end; no PHP/Laravel. TypeScript `strict: true` in every package.
 - Every route handler sets `export const runtime = "nodejs"`; no Edge runtime.
+- Hosting: dashboard and demo each run as one long-lived Node service (Render web service); PostgreSQL on Neon. Never serverless (e.g. Vercel functions): the SDK sends spans after the response, and a frozen function drops them. Prisma uses Neon's pooled URL as `DATABASE_URL` and the direct URL as `DIRECT_URL` (`directUrl`, for migrations). One instance per app, because the rate limiter is in memory.
 - Database: PostgreSQL via Prisma. Styling: Tailwind. Auth: Auth.js. Tests: Vitest + Playwright.
 - Trace propagation uses the W3C Trace Context `traceparent` header: `00-<32 hex traceId>-<16 hex spanId>-01`.
 - Primary renderer is React Flow. No Mermaid in this plan.
@@ -138,7 +139,7 @@ test("truncates long strings to 500 chars", () => {
     ```prisma
     model User    { id String @id @default(cuid()); email String @unique; passwordHash String; createdAt DateTime @default(now()); projects Project[] }
     model Project { id String @id @default(cuid()); name String; ownerId String; owner User @relation(fields:[ownerId], references:[id], onDelete: Cascade)
-                    publicKey String @unique; secretKeyHash String @unique; allowedOrigins String[]; createdAt DateTime @default(now()); spans Span[] }
+                    publicKey String @unique; secretKeyHash String @unique; allowedOrigins String[]; repoUrl String?; createdAt DateTime @default(now()); spans Span[] }
     model Span    { projectId String; id String; traceId String; parentSpanId String?; name String; kind String; startTime DateTime; durationMs Int
                     status String; errorMessage String?; sourceFile String?; sourceLine Int?; attributes Json @default("{}")
                     project Project @relation(fields:[projectId], references:[id], onDelete: Cascade)
@@ -168,7 +169,7 @@ test("signUp rejects duplicate email and passwords < 10 chars", async () => {
 
 - [ ] **Step 2: Run** `pnpm --filter dashboard test` — Expected: FAIL.
 
-- [ ] **Step 3: Implement** schema + `prisma migrate dev --name init`, `auth.ts` (Credentials provider, bcryptjs cost 12), `signUp`, login/signup pages, `middleware.ts` protecting `/projects/:path*`. Seed creates `demo@devlens.test` with password from `SEED_PASSWORD`.
+- [ ] **Step 3: Implement** schema (datasource `url = env("DATABASE_URL")`, `directUrl = env("DIRECT_URL")`) + `prisma migrate dev --name init`, `auth.ts` (Credentials provider, bcryptjs cost 12), `signUp`, login/signup pages, `middleware.ts` protecting `/projects/:path*`. Seed creates `demo@devlens.test` with password from `SEED_PASSWORD`.
 
 - [ ] **Step 4: Run** `pnpm --filter dashboard test` — Expected: PASS.
 
@@ -185,7 +186,7 @@ test("signUp rejects duplicate email and passwords < 10 chars", async () => {
 **Interfaces:**
 - Consumes: `prisma`, `requireUserId()` (Task 2).
 - Produces:
-  - `createProject(ownerId: string, name: string, allowedOrigins: string[]): Promise<{ project: Project; secretKey: string }>` — `publicKey = "pk_" + 24 random hex`, `secretKey = "sk_" + 32 random hex`, store `sha256(secretKey)` hex.
+  - `createProject(ownerId: string, name: string, allowedOrigins: string[], repoUrl?: string): Promise<{ project: Project; secretKey: string }>` — `repoUrl` must match `^https://github\.com/[\w.-]+/[\w.-]+$` or it throws `"Invalid repository URL"` (it is later rendered as a link, so this blocks `javascript:` URLs); `publicKey = "pk_" + 24 random hex`, `secretKey = "sk_" + 32 random hex`, store `sha256(secretKey)` hex.
   - `getOwnedProject(userId: string, projectId: string): Promise<Project | null>` — the single ownership check every dashboard read uses.
   - `hashKey(key: string): string`
 
@@ -203,6 +204,11 @@ test("another user's project is invisible", async () => {
 });
 test("rejects malformed origins", async () => {
   await expect(createProject(userA, "x", ["not a url"])).rejects.toThrow("Invalid origin");
+});
+test("repoUrl accepts GitHub repos only", async () => {
+  await expect(createProject(userA, "x", [], "https://github.com/team/DevLens")).resolves.toBeDefined();
+  for (const bad of ["javascript:alert(1)", "http://github.com/a/b", "https://evil.com/a/b", "https://github.com/a"])
+    await expect(createProject(userA, "x", [], bad)).rejects.toThrow("Invalid repository URL");
 });
 ```
 
@@ -269,11 +275,11 @@ test("re-sent batch is idempotent", async () => {
 **Interfaces:**
 - Consumes: `Span`, `newSpanId`, `newTraceId`, `parseTraceparent` (Task 1); ingest contract (Task 4).
 - Produces (from `@devlens/sdk-node`):
-  - `configure(opts: { endpoint: string; secretKey: string; fetch?: typeof fetch }): void`
+  - `configure(opts: { endpoint: string; secretKey: string; repoRoot?: string /*default process.cwd()*/; commitSha?: string; fetch?: typeof fetch }): void` — when `commitSha` is set, every span gets `attributes.commitSha` (used by the dashboard to build GitHub source links).
   - `withDevLens<C>(name: string, handler: (req: Request, ctx: C) => Promise<Response>): (req: Request, ctx: C) => Promise<Response>` — `kind: "http"` span; continues `traceparent` if valid, else new trace; `status = "error"` when handler throws or response status ≥ 400; attributes `{ method, path, httpStatus }`; on throw sets `errorMessage` and `source = sourceFromStack(err.stack)`, then rethrows; flushes after the response.
   - `span<T>(name: string, fn: () => Promise<T>): Promise<T>` — `kind: "function"` child of current span; captures call-site `source`.
   - `instrumentPrisma<T extends PrismaClient>(client: T): T` — `$extends` query hook; span name `"${model}.${operation}"`, `kind: "database"`, attributes `{ model, operation }` only; error message from the Prisma error.
-  - `sourceFromStack(stack: string | undefined): { file: string; line: number } | undefined` — first frame not under `node_modules`, `node:`, or `sdk-node`; paths made relative to `process.cwd()`.
+  - `sourceFromStack(stack: string | undefined): { file: string; line: number } | undefined` — first frame not under `node_modules`, `node:`, or `sdk-node`; paths made relative to `repoRoot`, always with `/` separators (Windows too).
   - `createExporter(opts): { push(span: Span): void; flush(): Promise<void> }` — sends in chunks of ≤ 500; never rejects.
 - Context: `AsyncLocalStorage<{ traceId: string; spanId: string }>`.
 
@@ -308,6 +314,12 @@ test("ingest failure never surfaces to the app", async () => {
 test("prisma spans carry no args", async () => { /* stub client; run user.create({ data: { email: "a@b.co" } }) */
   expect(JSON.stringify(sent())).not.toContain("a@b.co");
   expect(sent()[0]).toMatchObject({ name: "User.create", kind: "database", attributes: { model: "User", operation: "create" } });
+});
+test("source is repo-relative and spans carry commitSha", async () => {
+  configure({ endpoint: "http://x", secretKey: "sk_x", repoRoot: path.resolve(__dirname, "../../.."), commitSha: "abc123", fetch: fakeFetch });
+  await span("s", async () => {}); await flushed();
+  expect(sent()[0].source!.file).toBe("packages/sdk-node/src/handler.test.ts");
+  expect(sent()[0].attributes.commitSha).toBe("abc123");
 });
 ```
 
@@ -378,7 +390,7 @@ test("only kind 'browser' is ever emitted", async () => {
   - `POST /api/register` `{ email, name }` → `span("RegistrationService.registerUser")` → `prisma.demoUser.create`; Prisma `P2002` → `409 { error: "Email already registered" }`; success → `201`.
   - `POST /api/report` → throws `TypeError` from `services/report.ts` (unhandled → 500, has a source frame).
   - Home page: registration form (submits via `track("Submit registration", ...)`), "Generate report" button, "Register twice concurrently" button (fires two `track("Submit registration (concurrent)", ...)` calls at once with different emails — used by Task 11).
-- Env: `NEXT_PUBLIC_DEVLENS_ENDPOINT`, `NEXT_PUBLIC_DEVLENS_KEY` (pk), `DEVLENS_SECRET_KEY` (sk), `DATABASE_URL` (→ `demo` db). `next.config.ts`: `transpilePackages: ["@devlens/sdk-browser", "@devlens/sdk-node", "@devlens/shared"]`, `experimental.serverSourceMaps: true`; start with `NODE_OPTIONS=--enable-source-maps` so `source` points at `.ts` files.
+- Env: `NEXT_PUBLIC_DEVLENS_ENDPOINT`, `NEXT_PUBLIC_DEVLENS_KEY` (pk), `DEVLENS_SECRET_KEY` (sk), `DATABASE_URL` (→ `demo` db). `lib/devlens.ts` calls `configure({ endpoint, secretKey, repoRoot: path.resolve(process.cwd(), "../.."), commitSha: process.env.RENDER_GIT_COMMIT })` so source paths look like `apps/demo-app/services/registration.ts` (Render sets `RENDER_GIT_COMMIT` on deploy; locally it is unset and no links are made). `next.config.ts`: `transpilePackages: ["@devlens/sdk-browser", "@devlens/sdk-node", "@devlens/shared"]`, `experimental.serverSourceMaps: true`; start with `NODE_OPTIONS=--enable-source-maps` so `source` points at `.ts` files.
 
 - [ ] **Step 1: Build it.** Dashboard seed (Task 2) gains a project for the demo user with origin `http://localhost:3001` and prints its keys.
 - [ ] **Step 2: Verify manually:** `docker compose up -d`, run both apps, register the same email twice, then `psql devlens -c "select kind,name,status,\"sourceFile\" from \"Span\" order by \"startTime\""` — Expected: one trace containing `browser` → `browser` (fetch) → `http` → `function` → `database` (`DemoUser.create`, `error`) and `sourceFile` ending in `services/registration.ts`.
@@ -433,8 +445,11 @@ test("never leaks another project's spans", async () => {
   - `failurePath(spans: Span[]): Span[]` — root-first path to the deepest error span (ties → earliest `startTime`); `[]` if no error.
   - `defaultCollapsed(spans: Span[]): Set<string>` — empty when `spans.length ≤ 50`; otherwise ids of every span that has children and no error in its subtree.
   - `toFlow(spans: Span[], opts: { collapsed: Set<string>; focusFailure: boolean }): { nodes: Node<SpanNodeData>[]; edges: Edge[] }` — dagre layout top→bottom, node 240×64; `SpanNodeData = { span: Span; orphan: boolean; onFailurePath: boolean; hiddenChildren: number }`; a span whose `parentSpanId` is missing from the set is a root with `orphan: true`; collapsed spans hide their descendants; `focusFailure` keeps only failure-path spans.
-  - `type InvestigationContext = { traceId: string; failure: { spanId: string; operation: string; kind: SpanKind; error?: string; source?: string } | null; executionPath: string[]; spans: { name: string; kind: SpanKind; status: SpanStatus; durationMs: number; source?: string; httpStatus?: number }[]; evidence: { totalDurationMs: number; spanCount: number } }`
-  - `buildContext(spans: Span[], selectedIds?: string[]): InvestigationContext` — `spans` = selected spans, else the failure path, else all; `source` formatted `"file:line"` only when present.
+  - `type InvestigationContext = { traceId: string; failure: { spanId: string; operation: string; kind: SpanKind; error?: string; source?: string; sourceUrl?: string } | null; executionPath: string[]; spans: { name: string; kind: SpanKind; status: SpanStatus; durationMs: number; source?: string; sourceUrl?: string; httpStatus?: number }[]; evidence: { totalDurationMs: number; spanCount: number } }`
+  - `buildContext(spans: Span[], selectedIds?: string[], repoUrl?: string | null): InvestigationContext` — `spans` = selected spans, else the failure path, else all; `source` formatted `"file:line"` only when present; `sourceUrl` only when `repoUrl`, `span.attributes.commitSha` and `source` are all present.
+  - `sourceUrl(repoUrl: string, commitSha: string, source: { file: string; line: number }): string` → `${repoUrl}/blob/${commitSha}/${file}#L${line}` (a permalink to the exact code that ran).
+  - `type WaterfallRow = { span: Span; depth: number; offsetPct: number; widthPct: number }`
+  - `toWaterfall(spans: Span[]): WaterfallRow[]` — depth-first order (children sorted by `startTime`); offsets relative to the earliest span over the whole trace duration; `widthPct` at least `0.5` so 0 ms spans stay visible; orphans have depth 0.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -458,10 +473,24 @@ test("large traces collapse successful subtrees", () => {
 });
 test("context export matches the agreed shape and never invents source", () => {
   const c = buildContext(registrationTrace);
-  expect(c.failure).toMatchObject({ operation: "DemoUser.create", kind: "database", source: "services/registration.ts:14" });
+  expect(c.failure).toMatchObject({ operation: "DemoUser.create", kind: "database", source: "apps/demo-app/services/registration.ts:14" });
   expect(c.executionPath).toHaveLength(5);
   expect(buildContext(networkFailTrace).failure!.source).toBeUndefined();
   expect(buildContext(okTrace).failure).toBeNull();
+});
+test("source links only when repo, commit and source are all known", () => {
+  const withSha = registrationTrace.map((s) => ({ ...s, attributes: { ...s.attributes, commitSha: "abc123" } }));
+  expect(buildContext(withSha, undefined, "https://github.com/team/DevLens").failure!.sourceUrl)
+    .toBe("https://github.com/team/DevLens/blob/abc123/apps/demo-app/services/registration.ts#L14");
+  expect(buildContext(registrationTrace, undefined, "https://github.com/team/DevLens").failure!.sourceUrl).toBeUndefined();
+  expect(buildContext(withSha, undefined, null).failure!.sourceUrl).toBeUndefined();
+});
+test("waterfall rows are ordered, offset and never zero-width", () => {
+  const rows = toWaterfall(registrationTrace);
+  expect(rows.map((r) => r.depth)).toEqual([0, 1, 2, 3, 4]);
+  expect(rows[0].offsetPct).toBe(0);
+  expect(rows.every((r) => r.widthPct >= 0.5 && r.offsetPct + r.widthPct <= 100.5)).toBe(true);
+  expect(toWaterfall(serverOnlyTrace)[0].depth).toBe(0);
 });
 ```
 
@@ -472,7 +501,7 @@ test("context export matches the agreed shape and never invents source", () => {
 ### Task 10: Trace explorer UI and context endpoint
 
 **Files:**
-- Create: `apps/dashboard/app/projects/[projectId]/traces/[traceId]/page.tsx`, `apps/dashboard/components/trace-explorer.tsx`, `apps/dashboard/components/span-node.tsx`, `apps/dashboard/components/span-inspector.tsx`, `apps/dashboard/app/api/projects/[projectId]/traces/[traceId]/context/route.ts`
+- Create: `apps/dashboard/app/projects/[projectId]/traces/[traceId]/page.tsx`, `apps/dashboard/components/trace-explorer.tsx`, `apps/dashboard/components/span-node.tsx`, `apps/dashboard/components/span-inspector.tsx`, `apps/dashboard/components/trace-waterfall.tsx`, `apps/dashboard/app/api/projects/[projectId]/traces/[traceId]/context/route.ts`
 - Test: `apps/dashboard/test/context-route.test.ts`
 
 **Interfaces:**
@@ -483,7 +512,9 @@ test("context export matches the agreed shape and never invents source", () => {
     - React Flow canvas with `<Controls/>`, `<MiniMap/>`, custom `span-node` (kind icon, name, duration, red border on error, dashed border if orphan, "+N" badge when collapsed).
     - "Focus failing path" toggle, default on when the trace has an error.
     - Double-click toggles collapse; initial collapsed = `defaultCollapsed(spans)`.
-    - Click selects → `<SpanInspector>` side panel (name, kind, status, duration, error, source, attributes); shift-click multi-select.
+    - Click selects → `<SpanInspector>` side panel (name, kind, status, duration, error, source, attributes); shift-click multi-select. When `sourceUrl` exists the source is a link (`target="_blank" rel="noopener noreferrer"`) to the exact line on GitHub; otherwise plain text.
+    - "Graph | Timeline" tabs. Timeline = `<TraceWaterfall>`: one row per `toWaterfall` row, indented by depth, a bar positioned with `offsetPct`/`widthPct` (red for errors). Clicking a row selects the same span as the graph — one shared selection state.
+    - The page and the context route pass `project.repoUrl` to `buildContext`.
     - "Copy context for AI" (clipboard) and "Download JSON" use `buildContext(spans, selectedIds)`.
     - Inspector stacks below the canvas under `md`; all controls keyboard-reachable with labels.
 
@@ -505,7 +536,8 @@ test("context route enforces ownership", async () => {
 ### Task 11: End-to-end tests, CI, deployment
 
 **Files:**
-- Create: `playwright.config.ts`, `e2e/debug-flow.spec.ts`, `.github/workflows/ci.yml`, `README.md`
+- Create: `playwright.config.ts`, `e2e/debug-flow.spec.ts`, `.github/workflows/ci.yml`, `README.md`, `apps/dashboard/app/api/health/route.ts`, `apps/demo-app/app/api/health/route.ts`
+- Test: `apps/dashboard/test/health.test.ts`
 
 **Interfaces:**
 - Consumes: everything above. Playwright `webServer` starts dashboard (3000) and demo (3001) against a seeded DB.
@@ -533,8 +565,18 @@ test("signed-out users cannot open a trace", async ({ page }) => {
 ```
 
 - [ ] **Step 2: Run** `pnpm exec playwright test` — Expected: PASS (fix any integration gaps in the owning task's code).
+- [ ] **Step 2b: Health checks.** Both apps get `GET /api/health`: runs `SELECT 1`; `200 { ok: true, db: "up" }` or `503 { ok: false, db: "down" }`. Never includes env values, versions or error text. Test:
+
+```ts
+test("health reports db state without leaking details", async () => {
+  expect(await (await GET()).json()).toEqual({ ok: true, db: "up" });
+  vi.spyOn(prisma, "$queryRaw").mockRejectedValueOnce(new Error("password authentication failed"));
+  const res = await GET(); expect(res.status).toBe(503);
+  expect(await res.text()).not.toContain("password");
+});
+```
 - [ ] **Step 3: CI** — `ci.yml` on push/PR: Postgres 16 service, `pnpm install --frozen-lockfile`, `prisma migrate deploy` (both apps), `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm exec playwright test`. Expected: green run on GitHub.
-- [ ] **Step 4: Deploy** — dashboard and demo as two Node services (`next build && next start`, `NODE_OPTIONS=--enable-source-maps`) on a Node host (e.g. Render/Railway) with managed Postgres; set env from `.env.example`; demo project's allowed origin = deployed demo URL. README covers: architecture diagram, local setup, SDK usage snippet, security model (keys, sanitization), how to run tests, the usability study protocol (2–3 students diagnose the seeded bug with logs vs DevLens; record time and correctness).
+- [ ] **Step 4: Deploy** — dashboard and demo as two Render web services (`pnpm build`, start `next start`, `NODE_OPTIONS=--enable-source-maps`, health check path `/api/health`); one Neon Postgres project with databases `devlens` and `demo` (pooled → `DATABASE_URL`, direct → `DIRECT_URL`); run `prisma migrate deploy` in each build. Set env from `.env.example`; demo project's allowed origin = deployed demo URL; demo project's `repoUrl` = the team's GitHub repo. Add an uptime monitor (e.g. UptimeRobot free) on both `/api/health` URLs with a public status page linked from the README. Free Render services sleep when idle and free instance hours are capped per workspace — check the current limit before keeping both awake 24/7; ping only during demo/grading week, or upgrade for that month. README covers: architecture diagram, local setup, SDK usage snippet, security model (keys, sanitization), how to run tests, the usability study protocol (2–3 students diagnose the seeded bug with logs vs DevLens; record time and correctness).
 - [ ] **Step 5: Commit** `chore: e2e tests, CI and deployment docs`
 
 ---
@@ -543,3 +585,5 @@ test("signed-out users cannot open a trace", async ({ page }) => {
 
 - **MCP server (read-only):** `list_failed_traces`, `get_trace_context` wrapping Task 10's context endpoint with a per-project read token.
 - **Graphify enrichment:** import graph output for the demo repo; link `source.file` to graph nodes.
+- **Error grouping (PostHog/Sentry "issues"):** fingerprint failures by error span name + normalized message; show count, first seen, last seen; link to example traces.
+- **OTLP export:** forward spans in OpenTelemetry format so teams can also view them in Grafana Tempo/Jaeger.

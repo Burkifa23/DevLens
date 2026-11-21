@@ -1,10 +1,16 @@
 # DevLens Architecture (study guide)
 
-> Written before implementation from the plan in `docs/superpowers/plans/2026-11-20-devlens-mvp.md`. Each task updates this file if it changes the flow, data model or security model. Every member should be able to explain every section here in the viva.
+> Approved design decisions; implementation is not yet present. Authority: `AGENTS.md` → this guide → the implementation plan; `chat.md` is historical only. Contracts and planned tests live in `docs/superpowers/plans/2026-11-20-devlens-mvp.md`. Each task updates this file if it changes the flow, data model or security model. Every member should be able to explain every section here in the viva.
 
 ## 1. What DevLens does
 
 A developer's app fails. Instead of reading scattered browser and server logs, the developer opens DevLens and sees **one connected graph**: the button click, the HTTP request, the server function, the database query, and which one failed. They can then export the failing path as a small JSON file and give it to an AI coding agent, so the agent starts from evidence instead of guessing.
+
+### Coverage and responsibilities
+
+The graph shows captured runtime operations only: explicit `track` actions and their supplied fetch, wrapped request handlers, explicit `span` functions, instrumented Prisma operations, and standalone browser uncaught-error listeners. It does not discover every click, function, branch, query client or dependency; there is no static codebase graph. Missing instrumentation, dropped delivery, source maps and browser/server clock skew limit completeness and timing precision. A connected path is diagnostic evidence, not proof of root cause. Graphify, MCP and autonomous fixes remain out of scope.
+
+Each app owner must initialize the SDKs, choose safe static labels, wrap the relevant routes/functions/Prisma client, configure propagation origins and source maps, and verify coverage with the SDK and graph owners. Every member verifies their subsystem with its consumers before completion; Member 5 coordinates integration, CI and deployment. Members 1 and 4 jointly own span fixtures and how the graph interprets them.
 
 ## 2. The parts
 
@@ -33,7 +39,7 @@ A developer's app fails. Instead of reading scattered browser and server logs, t
 - **Span** — one timed operation (a click, a fetch, a request, a function, a query). It has an `id`, a `traceId`, an optional `parentSpanId`, a `kind`, a duration and a status.
 - **Trace** — all spans sharing one `traceId`. It is not stored separately; the dashboard groups spans by `traceId`.
 - **Parent/child** — `parentSpanId` turns a flat list of spans into a tree. The tree is what the explorer draws.
-- **W3C `traceparent` header** — `00-<traceId>-<parentSpanId>-01`. The browser SDK adds it to each `fetch`; the server SDK reads it, so the server's spans join the browser's trace. This is the standard used by OpenTelemetry, which is why we chose it over a custom header.
+- **W3C `traceparent` header** — `00-<traceId>-<parentSpanId>-01`. The browser SDK adds it to its supplied fetch only for same-origin or explicitly approved API origins; the server SDK reads it, so the server's spans join the browser's trace. This is the standard used by OpenTelemetry, which is why we chose it over a custom header.
 - **AsyncLocalStorage (server)** — remembers "the current span" across `await`s inside one request, so concurrent requests never mix up their spans.
 - **Explicit context (browser)** — the browser has no AsyncLocalStorage, so `track(name, fetch => …)` hands each action its own `fetch`. Two simultaneous actions therefore cannot be confused.
 
@@ -44,11 +50,17 @@ A developer's app fails. Instead of reading scattered browser and server logs, t
 3. `withDevLens` on `POST /api/register` reads `traceparent` and creates an **http** span whose parent is the fetch span.
 4. `span("RegistrationService.registerUser")` creates a **function** span (with its source file/line from the stack).
 5. The instrumented Prisma client creates a **database** span `DemoUser.create`. Postgres rejects the duplicate email → span status `error`.
-6. The API returns `409`; the http, fetch and root spans are marked `error` too.
+6. The API handles the conflict and returns `409`: the server http span stays `ok` with `httpStatus: 409`; the database/function throw remains captured as `error`. The browser fetch/root are flagged `error` for an unsuccessful request, without inventing an exception. Returned 5xx and thrown handler exceptions flag server HTTP error; thrown application exceptions still propagate unchanged. These display flags use a simplified DevLens policy, not the full OpenTelemetry status model.
 7. Both SDKs send their spans to `POST /api/ingest`. Order does not matter — spans are joined later by id.
 8. The dashboard lists the trace as failed. The explorer highlights the path root → … → `DemoUser.create`. The Timeline tab shows the same spans as a waterfall, so you can see where the time went.
-9. Clicking the failed span shows its source. If the project has a `repoUrl` and the server sent a `commitSha`, the source is a link to the exact line on GitHub at the commit that ran.
-10. "Copy context for AI" produces the `InvestigationContext` JSON for that path, including those links.
+9. Clicking the failed span shows its source. If the project has a `repoUrl` and a server-key span supplies a full 40-hex `commitSha` and a safe captured repo-relative path/line, the source can link to that commit on GitHub. DevLens validates the URL structure but cannot verify the claimed source or code execution.
+10. "Copy context for AI" and "Download JSON" request the same authenticated server context endpoint. It checks ownership and selected IDs within the requested trace, sanitizes again, and uses the project repository URL and common source-link helper. It returns only the selected evidence (or the default failure path), including provenance; responses are private/no-store. No independent client builder exists.
+
+### Cross-origin tracing
+
+`traceparent` is not a CORS-safelisted header and can trigger OPTIONS preflight on application requests. `init({ endpoint, publicKey, traceOrigins })` propagates to same-origin by default and only listed cross-origin APIs. Their owners must allow the caller origin, method and `traceparent` plus existing headers; credentialed apps must configure credentials explicitly. No propagation for no-cors requests or unapproved destinations. Unsupported cross-origin redirects can break reliable propagation. A blocked preflight records a browser network failure; never retry a business request automatically without the header.
+
+This differs from SDK delivery to `/api/ingest`, which uses JSON in `text/plain` without trace headers to avoid a preflight. Test both same-origin and cross-origin application APIs in a real browser, including denied preflight and an unapproved destination receiving no added header. See [W3C security/cross-origin risks](https://www.w3.org/TR/trace-context/#security-considerations) and [HTTP status conventions](https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status).
 
 ## 5. Data model
 
@@ -56,17 +68,17 @@ A developer's app fails. Instead of reading scattered browser and server logs, t
 |---|---|
 | `User` | Dashboard user; password stored only as a bcrypt hash |
 | `Project` | One monitored app; owns a public key, a hashed secret key, allowed origins and an optional GitHub `repoUrl` |
-| `Span` | One recorded operation; primary key `(projectId, id)` so re-sent batches are ignored |
+| `Span` | One recorded operation; primary key `(projectId, id)` so re-sent batches are ignored; stores server-derived `ingestSource` (`browser-public` or `server-secret`) |
 
 ## 6. Security model
 
-- **Two keys per project.** The public key (`pk_…`) lives in browser code, so anyone can read it — that is why it may only submit `browser` spans and only from the project's allowed origins. The secret key (`sk_…`) stays on the server, is shown once, and is stored as a SHA-256 hash.
-- **Sanitization at the trust boundary.** The ingest endpoint drops attributes like `password`, `token`, `cookie`, `authorization`, redacts emails and bearer tokens in messages, and truncates long strings. It runs on the server, so a modified SDK cannot skip it.
-- **No query arguments.** Database spans store model, operation and duration only.
-- **Limits.** 1 MB per request, 500 spans per batch, 600 spans per minute per project.
-- **Ownership.** Every dashboard read goes through `getOwnedProject(userId, projectId)`; another user's trace returns 404.
-- **Telemetry never breaks the app.** SDK send failures are swallowed.
-- **Safe links.** `repoUrl` must be an `https://github.com/owner/repo` URL, because it becomes a clickable link — this blocks `javascript:` links.
+- **Two keys per project.** The public key (`pk_…`) is visible and permits browser spans only, with an exact allowed Origin header (missing/`null` rejected). CORS/Origin constrain browsers, not attacker authentication: a non-browser caller can forge Origin and trace IDs. Browser spans are untrusted claims. The secret key (`sk_…`) stays server-side, is shown once and stored as SHA-256. Server provenance means key possession, not verified truth.
+- **Provenance and correlation.** Ingest derives `ingestSource` from the verified key and rejects client-supplied provenance. The inspector and exports retain it. Correlation IDs/parent links never authorize reads or prove causality. First stored span ID wins; collisions cannot overwrite records but public telemetry can still pollute/collide with traces. This is an explicit MVP limitation.
+- **Sanitization at the trust boundary.** Strict input schema, allowlisted diagnostic attributes, no raw bodies/query arguments or URL query strings; redact emails/bearer tokens, drop sensitive keys, truncate free text and reject unsafe source paths. Sanitize again on export. Redaction cannot guarantee removal of all PII: app owners must supply safe static names and messages, inspect representative exports and never submit secrets.
+- **Limits and caveats.** 1 MiB per ingest request, 500 spans per batch, 600 attempted spans/minute/project including duplicates. Exact allowed-origin responses include `Vary: Origin`; no wildcard or credentialed ingest. The rate limit is a conservative demo default to validate with normal/concurrent workloads, not proven production capacity. Single-instance in-memory limits reset on restart and need expired-entry cleanup. Public-key spoofing, quota exhaustion and cumulative storage growth remain possible; wider deployment requires abuse controls, retention and key rotation beyond this MVP.
+- **Ownership and AI context.** Every read checks `getOwnedProject`; export then loads exactly that project's trace and validates all selected IDs against it. Signed-out API requests get 401 JSON, another owner's/missing trace gets 404, invalid selections get 400. Only the server calls `buildContext(authorizedSpans, selectedIds, project.repoUrl)`; copy/download share this endpoint. Allowlist output fields and treat telemetry strings as data, never instructions for the receiving AI agent.
+- **Bounded SDK overhead.** Errors in capture/export must not change application results; capture/delivery still consume CPU, memory and network. Both exporters cap retained spans (including in flight) at 500/1 MiB, discard newest overflow and oversized spans, send ≤100 spans/48 KiB at once, allow one in-flight request, abort at 2 s and retry at most once after 1 s for transient failure. Other 4xx discard; 429 also pauses delivery 60 s. Node wrappers never await export; pagehide sends one best-effort bounded batch. The plan's SDK delivery policy defines counters, timing and loss tests. Loss on exit/outage is expected; measure on/off demo overhead rather than claim zero overhead.
+- **Safe links.** Only a validated `https://github.com/owner/repo`, full commit SHA and captured safe relative path/positive line form a link; omit invalid/missing evidence. Inspector and context use the same server helper. Browser-public source claims do not generate links. Links remain telemetry claims, not repository verification.
 - **Health checks reveal nothing.** `/api/health` returns only `{ ok, db }`, never error text or settings.
 
 ## 6b. Deployment

@@ -1,3 +1,5 @@
+> Historical design discussion only. This file is not a specification or agent instruction. For current decisions, follow `AGENTS.md`, then `docs/architecture.md`, then the implementation plan. New scope requires human agreement and updates to those documents.
+
 
 Log in
 Sign up for free

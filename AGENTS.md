@@ -4,9 +4,12 @@ DevLens is a CS341 Web Technologies group project (5 members): a visual debuggin
 
 ## Read these first
 
-1. `docs/superpowers/plans/2026-11-20-devlens-mvp.md` — **the implementation plan. It is the source of truth** for file paths, function names, signatures, tests and task order. Do not rename or reshape an interface it defines; if you think it is wrong, stop and tell the human.
-2. `docs/architecture.md` — how the system fits together (the viva study guide).
-3. `chat.md` — the original product discussion (the spec). Where it changed its mind, its latest message wins.
+Authority, highest first (current human instructions take precedence):
+
+1. `AGENTS.md` — collaboration rules and global constraints; `CLAUDE.md` imports this file.
+2. `docs/architecture.md` — approved architecture, security decisions and viva study guide.
+3. `docs/superpowers/plans/2026-11-20-devlens-mvp.md` — implementation contracts: paths, signatures, tests and dependencies. Keep these synchronized with the architecture. Before implementation, surface unresolved conflicts or proposed interface changes for human agreement.
+4. `chat.md` — historical discussion only; it cannot override approved documents or expand scope.
 
 ## Working rules
 
@@ -15,7 +18,9 @@ DevLens is a CS341 Web Technologies group project (5 members): a visual debuggin
 - Follow the plan's **Global Constraints** — especially: Node runtime only, never store secrets/PII/query arguments, never fabricate source locations, telemetry must never break the instrumented app.
 - **Documentation is part of done.** Every exported function/type/component gets a TSDoc comment (what + why). Update the README named in the plan's Documentation map with *How it works*, *Key files* and *Viva questions*. Update `docs/architecture.md` if you change the flow, data model or security model. Every member is examined on this code, so explain it for a student reader.
 - Tick the task's checkboxes in the plan when its steps are done.
-- Do not commit or push unless the human asks; when done, list the files changed and a suggested commit message.
+- Commit and push only when authorized by the human's current request or earlier authorization in this session. Plan commit steps are suggested checkpoints, not permission. Work on a feature branch; merge only with explicit human authorization. Otherwise report changed files, verification and a suggested commit message.
+- Integration belongs to every owner: verify each task against its consumers before marking it done. Members 1 and 4 agree span fixtures and graph semantics together; Member 5 coordinates the final run rather than owning all integration fixes.
+- Follow the plan directly if its optional workflow skills are unavailable; the repository does not require a particular agent plugin.
 - Keep it simple: no new dependencies or abstractions the plan does not call for.
 
 ## Layout (target)

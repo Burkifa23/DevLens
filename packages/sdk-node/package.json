@@ -1,0 +1,21 @@
+{
+  "name": "@devlens/sdk-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@devlens/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "vitest": "^3.2.0"
+  }
+}

@@ -11,3 +11,5 @@ playwright-report/
 .DS_Store
 # Prisma client, rebuilt by `prisma generate` (build/typecheck scripts run it)
 generated/
+# Local, per-session agent plans (not shared with the team)
+/plans/

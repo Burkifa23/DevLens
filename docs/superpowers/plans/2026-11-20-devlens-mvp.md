@@ -96,11 +96,11 @@ Task 1 lands first; then 2→3→4 and 5/6 run in parallel; 7 needs 4–6; 8–1
   - `formatTraceparent(traceId, spanId): string`, `parseTraceparent(header: string | null): { traceId: string; parentSpanId: string } | null`
   - `sanitizeSpan<T extends Span>(span: T): T` — preserves server-derived provenance on StoredSpan while sanitizing telemetry fields; provenance never comes from wire input
 
-- [ ] **Step 1: Scaffold workspace**
+- [x] **Step 1: Scaffold workspace**
 
 Root `package.json` scripts: `test` → `pnpm -r test`, `typecheck` → `pnpm -r typecheck`, `lint` → `pnpm -r lint`. `docker-compose.yml`: `postgres:16` on 5432; `docker/init.sql` creates databases `devlens`, `devlens_test`, `demo`. `.env.example` lists every env var used in later tasks.
 
-- [ ] **Step 2: Write failing tests**
+- [x] **Step 2: Write failing tests**
 
 ```ts
 // traceparent.test.ts
@@ -139,11 +139,11 @@ test("truncates long strings to 500 chars", () => {
 });
 ```
 
-- [ ] **Step 3: Run** `pnpm --filter @devlens/shared test` — Expected: FAIL (modules missing).
+- [x] **Step 3: Run** `pnpm --filter @devlens/shared test` — Expected: FAIL (modules missing).
 
-- [ ] **Step 4: Implement** `span.ts`, `traceparent.ts`, `sanitize.ts`. Use an explicit allowlist of diagnostic attributes (`method`, `path`, `httpStatus`, `model`, `operation`, `commitSha`); drop unknown keys, strip query/fragment/userinfo from request URLs and avoid dynamic identifiers in names/paths. Stack locations must be repo-relative, with no absolute paths, traversal, URL schemes or control characters; line must be a positive integer. Free-text redaction is best effort, not a guarantee of removing all PII; callers must use static labels and safe messages. Sensitive-key regex: `/pass|secret|token|auth|cookie|session|email|card/i`. Sanitizer applies to `name`, `errorMessage`, string attribute values.
+- [x] **Step 4: Implement** `span.ts`, `traceparent.ts`, `sanitize.ts`. Use an explicit allowlist of diagnostic attributes (`method`, `path`, `httpStatus`, `model`, `operation`, `commitSha`); drop unknown keys, strip query/fragment/userinfo from request URLs and avoid dynamic identifiers in names/paths. Stack locations must be repo-relative, with no absolute paths, traversal, URL schemes or control characters; line must be a positive integer. Free-text redaction is best effort, not a guarantee of removing all PII; callers must use static labels and safe messages. Sensitive-key regex: `/pass|secret|token|auth|cookie|session|email|card/i`. Sanitizer applies to `name`, `errorMessage`, string attribute values.
 
-- [ ] **Step 5: Run** `pnpm --filter @devlens/shared test` — Expected: PASS.
+- [x] **Step 5: Run** `pnpm --filter @devlens/shared test` — Expected: PASS.
 
 - [ ] **Step 6: Suggested commit checkpoint (only if authorized)** `feat(shared): monorepo scaffold and trace contract`
 

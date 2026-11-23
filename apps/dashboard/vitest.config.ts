@@ -13,8 +13,13 @@ export default defineConfig({
     globalSetup: [path.join(__dirname, "test/global-setup.ts")],
     setupFiles: [path.join(__dirname, "test/setup.ts")],
     fileParallelism: false, // all test files share one database
+    // next-auth imports "next/server" without a file extension, which Node's
+    // ESM loader rejects; letting Vitest bundle it resolves the import.
+    server: { deps: { inline: ["next-auth"] } },
     env: {
-      DATABASE_URL: url,
+      // The Prisma CLI only accepts sslmode=require; the pg driver used at
+      // runtime warns about it, so give the runtime the explicit equivalent.
+      DATABASE_URL: url.replace("sslmode=require", "sslmode=verify-full"),
       DIRECT_URL: url,
       AUTH_SECRET: "test-only-secret-not-used-anywhere-else",
     },

@@ -191,11 +191,11 @@ test("signUp rejects duplicate email and passwords < 10 chars", async () => {
 });
 ```
 
-- [ ] **Step 2: Run** `pnpm --filter dashboard test` — Expected: FAIL.
+- [x] **Step 2: Run** `pnpm --filter dashboard test` — Expected: FAIL.
 
-- [ ] **Step 3: Implement** schema (datasource `url = env("DATABASE_URL")`, `directUrl = env("DIRECT_URL")`) + `prisma migrate dev --name init`, `auth.ts` (Credentials provider, bcryptjs cost 12), `signUp`, login/signup pages, `middleware.ts` protecting `/projects/:path*`. Seed creates `demo@devlens.test` with password from `SEED_PASSWORD`.
+- [x] **Step 3: Implement** schema (datasource `url = env("DATABASE_URL")`, `directUrl = env("DIRECT_URL")`) + `prisma migrate dev --name init`, `auth.ts` (Credentials provider, bcryptjs cost 12), `signUp`, login/signup pages, `middleware.ts` protecting `/projects/:path*`. Seed creates `demo@devlens.test` with password from `SEED_PASSWORD`.
 
-- [ ] **Step 4: Run** `pnpm --filter dashboard test` — Expected: PASS.
+- [x] **Step 4: Run** `pnpm --filter dashboard test` — Expected: PASS.
 
 - [ ] **Step 5: Suggested commit checkpoint (only if authorized)** `feat(dashboard): schema and credential auth`
 

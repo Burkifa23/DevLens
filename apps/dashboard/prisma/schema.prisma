@@ -1,0 +1,59 @@
+// DevLens dashboard data model. See docs/architecture.md, "Data model".
+// Prisma 7: connection URLs live in prisma.config.ts (CLI) and lib/db.ts (runtime), not here.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// A dashboard user. Only a bcrypt hash of the password is stored.
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  projects     Project[]
+}
+
+/// One monitored application. The secret key is stored only as a SHA-256 hash (Task 3).
+model Project {
+  id             String   @id @default(cuid())
+  name           String
+  ownerId        String
+  owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  publicKey      String   @unique
+  secretKeyHash  String   @unique
+  allowedOrigins String[]
+  repoUrl        String?
+  createdAt      DateTime @default(now())
+  spans          Span[]
+}
+
+/// One recorded operation. A trace is all spans sharing a traceId (no Trace table).
+/// The composite id makes re-sent batches idempotent (createMany skipDuplicates).
+model Span {
+  projectId    String
+  id           String
+  traceId      String
+  parentSpanId String?
+  name         String
+  kind         String
+  startTime    DateTime
+  durationMs   Int
+  status       String
+  /// "browser-public" | "server-secret", set by the ingest server from the verified key.
+  ingestSource String
+  errorMessage String?
+  sourceFile   String?
+  sourceLine   Int?
+  attributes   Json     @default("{}")
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, id])
+  @@index([projectId, traceId])
+  @@index([projectId, startTime])
+}

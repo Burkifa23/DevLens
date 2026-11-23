@@ -9,3 +9,5 @@ playwright-report/
 .env.*
 !.env.example
 .DS_Store
+# Prisma client, rebuilt by `prisma generate` (build/typecheck scripts run it)
+generated/

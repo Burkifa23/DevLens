@@ -152,8 +152,9 @@ test("truncates long strings to 500 chars", () => {
 ### Task 2: Dashboard app, database schema, auth
 
 **Files:**
-- Create: `apps/dashboard/` via `create-next-app` (TS, Tailwind, App Router), `apps/dashboard/prisma/schema.prisma`, `apps/dashboard/prisma/seed.ts`, `apps/dashboard/lib/db.ts`, `apps/dashboard/auth.ts`, `apps/dashboard/middleware.ts`, `apps/dashboard/app/(auth)/login/page.tsx`, `apps/dashboard/app/(auth)/signup/page.tsx`, `apps/dashboard/app/(auth)/actions.ts`
+- Create: `apps/dashboard/` via `create-next-app` (TS, Tailwind, App Router), `apps/dashboard/prisma/schema.prisma`, `apps/dashboard/prisma/seed.ts`, `apps/dashboard/lib/db.ts`, `apps/dashboard/auth.ts`, `apps/dashboard/proxy.ts`, `apps/dashboard/app/(auth)/login/page.tsx`, `apps/dashboard/app/(auth)/signup/page.tsx`, `apps/dashboard/app/(auth)/actions.ts`
 - Test: `apps/dashboard/test/auth.test.ts`, `apps/dashboard/test/setup.ts`
+- Version notes (decided at implementation, 2026-11-23): Next.js 16 renamed `middleware.ts` to `proxy.ts` (Node runtime by default). Prisma 7 moves connection URLs out of `schema.prisma`: the CLI reads `DIRECT_URL` from `prisma.config.ts`, the runtime client uses `@prisma/adapter-pg` with `DATABASE_URL`, and the client is generated to `generated/prisma`. `cacheComponents` is off (all pages are per-user). UI components come from shadcn/ui (copied into `components/ui`); color tokens are documented in `apps/dashboard/README.md`. Tests use `TEST_DATABASE_URL`, which must name a `*_test` database.
 
 **Interfaces:**
 - Consumes: nothing beyond Task 1 scaffold.
@@ -174,7 +175,7 @@ test("truncates long strings to 500 chars", () => {
   - `requireUserId(): Promise<string>` in `lib/session.ts` — redirects to `/login` when signed out
   - Test helper `resetDb()` in `test/setup.ts` (truncates all tables in `devlens_test`)
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```ts
 test("signUp stores a bcrypt hash, never the password", async () => {

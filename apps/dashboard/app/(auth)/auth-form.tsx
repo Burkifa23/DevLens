@@ -31,7 +31,7 @@ export function AuthForm({
     <form action={formAction} className="grid gap-4">
       <div className="grid gap-2">
         <Label htmlFor="email">Email</Label>
-        <Input id="email" name="email" type="email" autoComplete="email" required />
+        <Input id="email" name="email" type="email" autoComplete="email" required defaultValue={state.email} />
       </div>
       <div className="grid gap-2">
         <Label htmlFor="password">Password</Label>

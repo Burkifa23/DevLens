@@ -312,15 +312,15 @@ test("re-sent batch is idempotent", async () => {
   - `configure(opts: { endpoint: string; secretKey: string; repoRoot?: string /*default process.cwd()*/; commitSha?: string; fetch?: typeof fetch }): void` — when `commitSha` is set, every span gets `attributes.commitSha` (used by the dashboard to build GitHub source links).
   - `withDevLens<C>(name: string, handler: (req: Request, ctx: C) => Promise<Response>): (req: Request, ctx: C) => Promise<Response>` — `kind: "http"` span; continues `traceparent` if valid, else new trace; `status = "error"` when handler throws or response status ≥ 500 (returned 4xx stay `ok`); attributes `{ method, path, httpStatus }`; on throw sets `errorMessage` and `source = sourceFromStack(err.stack)`, then rethrows unchanged; schedules a bounded exporter flush without awaiting it.
   - `span<T>(name: string, fn: () => Promise<T>): Promise<T>` — `kind: "function"` child of current span; captures call-site `source`.
-  - `instrumentPrisma<T extends PrismaClient>(client: T): T` — `$extends` query hook; span name `"${model}.${operation}"`, `kind: "database"`, attributes `{ model, operation }` only; error message from the Prisma error.
-  - `sourceFromStack(stack: string | undefined): { file: string; line: number } | undefined` — first eligible frame inside repoRoot, excluding `node_modules`, `node:`, or `sdk-node`; omit if unavailable/outside the repo; paths made relative to `repoRoot`, always with `/` separators (Windows too).
+  - `instrumentPrisma<T extends PrismaClientLike>(client: T): T` — `$extends` query hook; span name `"${model}.${operation}"`, `kind: "database"`, attributes `{ model, operation }` only; error message is the Prisma error code plus the final reason line (full Prisma messages can echo the call's arguments). `PrismaClientLike = { $extends(...) }` is structural because Prisma 7 generates a client per app; a real generated client keeps its model types.
+  - `sourceFromStack(stack: string | undefined): { file: string; line: number } | undefined` — first eligible frame inside repoRoot, excluding `node_modules`, `node:`, or the SDK's own non-test source files (`sdk-node/src|dist`, but not its `*.test.ts`); omit if unavailable/outside the repo; paths made relative to `repoRoot`, always with `/` separators (Windows too).
   - `createExporter(opts): { push(span: Span): void; flush(): Promise<void>; readonly droppedCount: number }` — `opts` is `{ endpoint: string; key: string; fetch?: typeof fetch }` (Node configure maps secretKey to key, browser init maps publicKey); obeys the SDK delivery policy above; never rejects; exposes a read-only numeric `droppedCount` for local diagnostics/tests.
 - Context: `AsyncLocalStorage<{ traceId: string; spanId: string }>`.
 - Both SDK packages test `createExporter` with fake timers/injected fetch: 501st span increments `droppedCount`; bytes hit the 1 MiB cap before count for large spans; >16 KiB spans drop; each JSON envelope ≤48 KiB and ≤100 spans. A never-resolving fetch observes AbortSignal at 2 s; at most two attempts/5 s per flush; concurrent flushes produce one in-flight request. Test network/5xx retry with original IDs, 400/401/403 discard, 429 discard + 60 s pause, no recursive instrumentation and queue memory release. Browser tests additionally cover beacon false/true, ≤one fallback and no pagehide retry. These are required tests in the existing `src/*.test.ts` files, not optional performance aspirations.
 - Required wrapper tests also cover returned 500 without fabricated exception, a thrown function/Prisma error later handled as 409, identical returned response/value or original thrown Error when capture/export fails, and no waiting for a hanging exporter. SDK-internal capture failures are isolated from application failures.
 
 
-- [ ] **Step 1: Write failing tests** (fake `fetch` capturing bodies)
+- [x] **Step 1: Write failing tests** (fake `fetch` capturing bodies)
 
 ```ts
 test("continues the incoming trace and nests spans", async () => {
@@ -362,7 +362,7 @@ test("source is repo-relative and spans carry commitSha", async () => {
 });
 ```
 
-- [ ] **Step 2: Run** `pnpm --filter @devlens/sdk-node test` — Expected: FAIL. **Step 3: Implement.** **Step 4: Run** — Expected: PASS.
+- [x] **Step 2: Run** `pnpm --filter @devlens/sdk-node test` — Expected: FAIL. **Step 3: Implement.** **Step 4: Run** — Expected: PASS.
 
 - [ ] **Step 5: Suggested commit checkpoint (only if authorized)** `feat(sdk-node): request, function and prisma spans`
 
@@ -379,12 +379,12 @@ test("source is repo-relative and spans carry commitSha", async () => {
 - Produces (from `@devlens/sdk-browser`):
   - `init(opts: { endpoint: string; publicKey: string; traceOrigins?: string[] }): void` — `traceOrigins` defaults to `[]` and lists exact cross-origin application API origins approved for propagation (distinct from dashboard ingest allowedOrigins); same-origin propagates by default. Also registers `window` `error` and `unhandledrejection` listeners, each recorded as a standalone root span `name: "uncaught error"`, `status: "error"`.
   - `track<T>(name: string, fn: (fetch: typeof window.fetch) => Promise<T>): Promise<T>` — root `kind: "browser"` span; the `fetch` passed in creates a child span `"fetch <METHOD> <path>"`, sets `traceparent` to that child's id only for same-origin or explicitly allowlisted destinations (never for `mode: "no-cors"`), records `httpStatus`, marks error on network failure or `!res.ok`. Root span is error if `fn` throws or any child failed. Preserve response/rejection behavior and existing Request/init headers; do not add trace headers to unapproved destinations or exporter calls.
-  - Exporter follows the shared SDK delivery policy, including the pagehide beacon/keepalive limit; `Content-Type: text/plain`. Never throws. Implement/export the same `createExporter(opts)` interface as Task 5 in this package, including `droppedCount`.
+  - Exporter follows the shared SDK delivery policy, including the pagehide beacon/keepalive limit; `Content-Type: text/plain`. Never throws. Implement/export the same `createExporter(opts)` interface as Task 5 in this package, including `droppedCount`, plus `sendOnPageHide()`; `init` registers one `pagehide` listener that calls it on the current exporter, so re-initialising never sends more than one batch.
 - `traceparent` is not CORS-safelisted: adding it to a cross-origin application request can trigger OPTIONS preflight. The destination API owner must allow the calling origin, method and `traceparent` in `Access-Control-Allow-Headers` (plus existing headers such as `content-type`); configure credentials only if the app needs them. No automatic retry without the header: retrying business requests risks duplicate side effects. Unapproved destinations are still recorded locally but have no propagated link. Document redirects to other origins as unsupported for reliable propagation; do not trace redirecting third-party endpoints.
 - Test same-origin propagation, an approved cross-origin API with successful OPTIONS, rejection when that API omits `traceparent`, and an unapproved origin receiving no added header. Real-browser preflight checks belong in Task 11; jsdom mocks alone cannot prove CORS compatibility.
 - Context is passed explicitly through the `fetch` argument — no global "current span" — so overlapping actions cannot cross-link.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```ts
 test("fetch inside track propagates traceparent from the fetch span", async () => {
@@ -416,7 +416,7 @@ test("only kind 'browser' is ever emitted", async () => {
 });
 ```
 
-- [ ] **Step 2: Run** `pnpm --filter @devlens/sdk-browser test` — Expected: FAIL. **Step 3: Implement.** **Step 4: Run** — Expected: PASS.
+- [x] **Step 2: Run** `pnpm --filter @devlens/sdk-browser test` — Expected: FAIL. **Step 3: Implement.** **Step 4: Run** — Expected: PASS.
 
 - [ ] **Step 5: Suggested commit checkpoint (only if authorized)** `feat(sdk-browser): tracked actions and error capture`
 

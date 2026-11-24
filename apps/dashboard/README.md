@@ -82,9 +82,13 @@ Defined in `app/globals.css` and used as Tailwind classes, e.g. `text-status-err
 
 | Token | Meaning |
 |---|---|
-| `primary` (indigo) | Actions, links, focus rings, selected nodes |
+| `primary` (black in light mode, white in dark) | Buttons, focus rings, selected nodes. The UI is monochrome. |
 | `status-error` (= `destructive`, red) | A failed span. Red is used for nothing else. |
 | `status-ok` (green) | A successful span, used sparingly; most OK spans stay neutral |
 | `kind-browser` / `kind-http` / `kind-function` / `kind-database` | Span kind accents (blue, violet, teal, amber) |
 
-Rules: status and kind are never shown by color alone; pair them with an icon or text, since about 1 in 12 men has red–green color blindness. Dark mode follows the operating system setting.
+Rules:
+- The interface is black, white and gray. Color appears only where it carries meaning: errors, and the four span kinds.
+- Text links are always underlined, since color can't mark them in a monochrome UI.
+- Status and kind are never shown by color alone; pair them with an icon or text, since about 1 in 12 men has red–green color blindness.
+- Dark mode follows the operating system setting.

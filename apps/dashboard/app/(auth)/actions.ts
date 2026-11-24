@@ -8,7 +8,11 @@ import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 
 /** What the login/signup forms show after a submit: nothing, or one error message. */
-export type FormState = { error?: string };
+export type FormState = {
+  error?: string;
+  /** The email the user typed, sent back with an error so the form keeps it (the password is cleared on purpose). */
+  email?: string;
+};
 
 const SignUpSchema = z.object({
   email: z.email("Enter a valid email address").transform((e) => e.trim().toLowerCase()),
@@ -62,7 +66,7 @@ export async function logIn(_prev: FormState, formData: FormData): Promise<FormS
     });
     return {};
   } catch (e) {
-    if (e instanceof AuthError) return { error: "Invalid email or password" };
+    if (e instanceof AuthError) return { error: "Invalid email or password", email: String(formData.get("email") ?? "") };
     throw e;
   }
 }
@@ -70,5 +74,5 @@ export async function logIn(_prev: FormState, formData: FormData): Promise<FormS
 /** Signup form action: creates the account, then logs straight in. */
 export async function signUpAndLogIn(prev: FormState, formData: FormData): Promise<FormState> {
   const result = await signUp(formData);
-  return result.error ? result : logIn(prev, formData);
+  return result.error ? { ...result, email: String(formData.get("email") ?? "") } : logIn(prev, formData);
 }

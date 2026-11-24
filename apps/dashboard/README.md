@@ -45,6 +45,37 @@ Tests: `pnpm --filter dashboard test`. They migrate and wipe the `*_test` databa
 - **Why is `proxy.ts` not enough to protect pages?** It is an optimistic redirect that only runs for matched paths. A missed path or matcher typo would expose data, so each page and action re-checks with `requireUserId()`.
 - **Where is the session stored?** In a signed JWT cookie (`AUTH_SECRET` signs it). The server can verify it without a database lookup; the trade-off is that a session can't be revoked before it expires.
 
+## Projects & keys (Task 3)
+
+### How it works
+
+1. **Creating a project** (`/projects`): the form sends a name, allowed origins (one per line) and an optional GitHub repo URL to `createProjectAction`. The action re-checks the session with `requireUserId()` and calls `createProject`.
+2. **Validation in `createProject`**: the name is trimmed (1–100 characters). Each origin goes through `new URL(o).origin`, so `http://localhost:3001/app?x=1` becomes `http://localhost:3001`. Only `http:` and `https:` are allowed, duplicates are removed, and there are at most 20. The repo URL must be exactly `https://github.com/owner/repo`. Any problem throws `ProjectInputError`, which the action turns into a form error. Any other error is a real bug and is rethrown.
+3. **Two keys**: `pk_` + 24 random hex characters is the **public key**. It's stored as-is, because it goes into browser code. `sk_` + 32 random hex characters is the **secret key**. Only its SHA-256 hash is stored, and the key itself is returned exactly once, in the action's response, so the form can show it with a "copy it now" warning.
+4. **Ownership**: `getOwnedProject(userId, projectId)` looks a project up by id *and* owner. Every page, action and route that takes a project id must use it. Someone else's project gives the same 404 as a project that doesn't exist.
+5. **Settings** (`/projects/[projectId]/settings`): shows the public key with a copy button, the allowed origins, the repo link, and the environment variables to paste into the instrumented app. It never shows the secret key or its hash.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `lib/projects.ts` | `createProject`, `getOwnedProject`, `listProjects`, `hashKey`, `ProjectInputError` |
+| `app/projects/actions.ts` | `createProjectAction`: session check, input to `createProject`, errors to form state |
+| `app/projects/page.tsx` | Project list and the create form |
+| `app/projects/create-project-form.tsx` | Client form; shows the new keys once |
+| `app/projects/[projectId]/settings/page.tsx` | Keys, origins, repo link, setup snippet |
+| `components/copy-button.tsx` | `CopyButton` and `KeyField` (monospace value + copy) |
+| `test/projects.test.ts` | Key format and hashing, ownership, origin and repo validation |
+
+### Viva questions
+
+- **Why SHA-256 for the secret key when passwords use bcrypt?** The key is 128 random bits, so there is nothing to guess and a slow hash adds no protection; SHA-256 lets ingest find the project with one indexed lookup (`secretKeyHash`). Passwords are short and human-chosen, so they need bcrypt's deliberate slowness.
+- **Why can't the dashboard show the secret key again?** Only the hash is stored, and a hash can't be reversed. If the database leaks, the attacker gets hashes, not working keys.
+- **Why is the public key safe in browser code?** It can only submit `browser` spans, and only from the project's allowed origins (enforced in ingest, Task 4). It can't read anything. A non-browser client can fake the `Origin` header, so this limits honest browsers; it isn't authentication.
+- **Why must the repo URL match `https://github.com/owner/repo` exactly?** It is rendered as a link. A looser check could store `javascript:alert(1)`, which would run code when clicked (stored XSS).
+- **Why does someone else's project return 404 instead of 403?** A 403 would confirm that the id exists. A 404 reveals nothing.
+- **Why normalize origins with `new URL(o).origin`?** Browsers send the `Origin` header as scheme + host + port only, lowercase, with no path or trailing slash. Storing the same form makes ingest's check an exact string match.
+
 ## Design tokens
 
 Defined in `app/globals.css` and used as Tailwind classes, e.g. `text-status-error`, `bg-kind-database/10`.

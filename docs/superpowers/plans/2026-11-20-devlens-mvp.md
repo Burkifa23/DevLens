@@ -258,7 +258,7 @@ test("repoUrl accepts GitHub repos only", async () => {
 - Rate limit attempted spans (including duplicates) before insertion, and expire idle limiter entries. 600 spans/minute is a conservative demo default, not a validated production capacity; load-test a normal and concurrent demo workload and record accepted/dropped counts before release. Origin/schema/limits reduce abuse but do not prevent spoofing, quota exhaustion or storage growth; public internet use needs additional abuse controls/retention and key rotation beyond this MVP.
 - `handleIngest(req: Request): Promise<Response>` in `lib/ingest.ts` (route just re-exports it, so tests call it directly).
 
-- [ ] **Step 1: Write failing tests** (real `devlens_test` DB)
+- [x] **Step 1: Write failing tests** (real `devlens_test` DB)
 
 ```ts
 test("secret key stores sanitized spans", async () => {
@@ -292,11 +292,11 @@ test("re-sent batch is idempotent", async () => {
 });
 ```
 
-- [ ] **Step 2: Run** — Expected: FAIL.
+- [x] **Step 2: Run** — Expected: FAIL.
 
-- [ ] **Step 3: Implement.** Order: size → JSON → schema → key lookup (`pk_` by `publicKey`, `sk_` by `secretKeyHash`) → origin/kind → rate limit → sanitize → attach server-derived ingestSource → insert. `rate-limit.ts`: fixed 60 s window `Map<projectId, {windowStart, count}>`, marked `// ponytail: in-memory, single instance only; move to Postgres/Redis if horizontally scaled`.
+- [x] **Step 3: Implement.** Order: size → JSON → schema → key lookup (`pk_` by `publicKey`, `sk_` by `secretKeyHash`) → origin/kind → rate limit → sanitize → attach server-derived ingestSource → insert. `rate-limit.ts`: fixed 60 s window `Map<projectId, {windowStart, count}>`, marked `// ponytail: in-memory, single instance only; move to Postgres/Redis if horizontally scaled`.
 
-- [ ] **Step 4: Run** — Expected: PASS. **Step 5: Suggested commit checkpoint (only if authorized)** `feat(dashboard): span ingest endpoint`
+- [x] **Step 4: Run** — Expected: PASS. **Step 5: Suggested commit checkpoint (only if authorized)** `feat(dashboard): span ingest endpoint`
 
 ---
 

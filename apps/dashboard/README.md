@@ -76,6 +76,40 @@ Tests: `pnpm --filter dashboard test`. They migrate and wipe the `*_test` databa
 - **Why does someone else's project return 404 instead of 403?** A 403 would confirm that the id exists. A 404 reveals nothing.
 - **Why normalize origins with `new URL(o).origin`?** Browsers send the `Origin` header as scheme + host + port only, lowercase, with no path or trailing slash. Storing the same form makes ingest's check an exact string match.
 
+## Ingest (Task 4)
+
+### How it works
+
+`POST /api/ingest` is the only way spans get into DevLens. Both SDKs send `{ "key": "...", "spans": [...] }` as JSON with `Content-Type: text/plain`. That content type keeps the browser request a CORS "simple request", so there is no preflight `OPTIONS` round trip. `handleIngest` runs the checks cheapest first, so bad requests are rejected before they cost a database query:
+
+1. **Size**: the body is read in chunks and abandoned as soon as it passes 1 MiB → `413`. It does not trust `Content-Length`, which a client can omit or fake.
+2. **JSON + schema**: `IngestBatchSchema` from `@devlens/shared` is strict: 1–500 spans, size limits, and no unknown fields. A forged `ingestSource` field is rejected → `400`.
+3. **Key**: `pk_…` is looked up as-is, `sk_…` by its SHA-256 hash → `401` if neither matches.
+4. **Public key rules**: the `Origin` header must be one of the project's allowed origins (a missing or `"null"` Origin never matches), and every span must be `kind: "browser"` → `403`.
+5. **Rate limit**: at most 600 spans per project per minute. Duplicates count, and a rejected batch doesn't → `429`.
+6. **Store**: each span is sanitized, labelled with `ingestSource` (`browser-public` or `server-secret`, decided by which key was verified), and inserted with `createMany({ skipDuplicates: true })`. A span id already stored for the project is skipped, so the first copy wins and can't be overwritten. Re-sent batches are harmless. → `202 { accepted }`, the number of newly stored spans.
+
+When the Origin was accepted, every response from step 4 on carries `Access-Control-Allow-Origin: <that origin>` and `Vary: Origin`, never `*`, so the browser SDK can read the status. Other origins get no CORS header, so the browser blocks the page from reading the response.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `lib/ingest.ts` | `handleIngest`: the checks above, CORS, row mapping |
+| `lib/rate-limit.ts` | `allowSpans`: per-project fixed 60 s window, in memory |
+| `app/api/ingest/route.ts` | The route; just calls `handleIngest` (Node runtime) |
+| `test/ingest.test.ts` | Keys, origins, kinds, size, schema, flood, idempotency, CORS |
+| `test/rate-limit.test.ts` | Window reset, rejected batches, idle cleanup (fake clock) |
+
+### Viva questions
+
+- **Why `text/plain` instead of `application/json`?** A cross-origin `application/json` POST triggers a CORS preflight (`OPTIONS`) first: two round trips per batch, and `sendBeacon` can't do it at all. `text/plain` is a "simple request" with no preflight; the server parses the body as JSON anyway.
+- **Does the Origin check stop attackers?** No. Any non-browser client (curl, a script) can send any `Origin` header. It stops *other websites' pages* from using your public key through visitors' browsers. That's why the public key can only add browser spans, and why stored spans say `browser-public`: treat them as claims, not proof.
+- **Why is `ingestSource` set by the server, and why reject it in the body?** If clients could label their own spans, a browser could pass its spans off as `server-secret` (trusted server evidence). Only the key the server verified decides the label.
+- **Why read the body in chunks instead of checking `Content-Length`?** The header is optional and can lie. Reading everything first would let one request use unlimited memory; stopping at 1 MiB bounds it.
+- **What happens if the same batch is sent twice?** The SDKs retry once on network errors, so it does happen. The primary key `(projectId, id)` plus `skipDuplicates` stores each span once, and the first copy wins.
+- **What are the rate limiter's limits?** It's in memory, so it only works with one server instance and resets on restart. 600/minute is a demo default, not a measured capacity. The upgrade path is a shared counter in Postgres or Redis.
+
 ## Design tokens
 
 Defined in `app/globals.css` and used as Tailwind classes, e.g. `text-status-error`, `bg-kind-database/10`.

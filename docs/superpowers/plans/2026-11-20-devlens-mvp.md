@@ -481,7 +481,8 @@ test("never leaks another project's spans", async () => {
 
 **Files:**
 - Create: `apps/dashboard/lib/trace-graph.ts`, `apps/dashboard/lib/context.ts` (server-only builder and source-link helper; keep out of client imports)
-- Test: `apps/dashboard/test/trace-graph.test.ts`, `apps/dashboard/test/context.test.ts`
+- Test: `apps/dashboard/test/trace-graph.test.ts`, `apps/dashboard/test/context.test.ts`, `apps/dashboard/test/fixtures/traces.ts`
+- Implementation notes (2026-11-24): adds `@dagrejs/dagre` to the dashboard. `trace-graph.ts` also exports `spanDepths(spans): Map<string, number>` (used by `buildContext` to rank errors and order paths) and `NODE_WIDTH`/`NODE_HEIGHT`. A span whose parent link forms a cycle is cut into a root and flagged `orphan`, like a missing parent. `focusFailure` on a trace with no error shows the full graph. These tests are pure and don't need the database; the dashboard's Vitest config still runs its database global setup first.
 
 **Interfaces:**
 - Consumes: `StoredSpan` (Tasks 1–2). All graph/context fixtures include server-derived `ingestSource`; registration fixtures label the first two spans `browser-public` and the remainder `server-secret`.
@@ -495,7 +496,7 @@ test("never leaks another project's spans", async () => {
   - `type WaterfallRow = { span: StoredSpan; depth: number; offsetPct: number; widthPct: number }`
   - `toWaterfall(spans: StoredSpan[]): WaterfallRow[]` — depth-first order (children sorted by `startTime`); offsets relative to the earliest span over the whole trace duration; `widthPct` at least `0.5` so 0 ms spans stay visible; orphans have depth 0.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```ts
 test("failure path for duplicate registration", () => {
@@ -557,7 +558,7 @@ test("waterfall rows are ordered, offset and never zero-width", () => {
 });
 ```
 
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5: Suggested commit checkpoint (only if authorized)** `feat(dashboard): trace graph transforms and context export`
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS. **Step 5: Suggested commit checkpoint (only if authorized)** `feat(dashboard): trace graph transforms and context export`
 
 ---
 

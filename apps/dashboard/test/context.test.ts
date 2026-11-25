@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildContext, sourceUrl } from "../lib/context";
-import { networkFailTrace, okTrace, registrationTrace } from "./fixtures/traces";
+import { cyclicTrace, networkFailTrace, okTrace, registrationTrace } from "./fixtures/traces";
 
 const repo = "https://github.com/team/DevLens";
 const sha = "a".repeat(40);
@@ -61,9 +61,8 @@ describe("sourceUrl", () => {
   });
 });
 
-// WAITING ON TASKS 1–2: these are the plan's tests, unchanged. Remove `.skip` once
-// `StoredSpan` exists in @devlens/shared and the fixtures in ./fixtures/traces are filled in.
-describe.skip("buildContext (waiting on Task 1 StoredSpan contract)", () => {
+// The plan's buildContext tests, unchanged.
+describe("buildContext (plan tests)", () => {
   test("context export matches the agreed shape and never invents source", () => {
     const c = buildContext(registrationTrace);
     expect(c.failure).toMatchObject({ operation: "DemoUser.create", kind: "database", source: "apps/demo-app/services/registration.ts:14" });
@@ -98,5 +97,53 @@ describe.skip("buildContext (waiting on Task 1 StoredSpan contract)", () => {
     expect(sourceUrl("javascript:alert(1)", sha, { file: "a.ts", line: 1 })).toBeUndefined();
     const browser = { ...registrationTrace.at(-1)!, ingestSource: "browser-public" as const, attributes: { commitSha: sha } };
     expect(buildContext([browser], undefined, repo).spans[0].sourceUrl).toBeUndefined();
+  });
+});
+
+// Extra cases from the buildContext contract text.
+describe("buildContext (edge cases)", () => {
+  test("default export is the failure path with its evidence", () => {
+    const c = buildContext(registrationTrace);
+    expect(c.traceId).toBe(registrationTrace[0].traceId);
+    expect(c.spans.map((s) => s.spanId)).toEqual(registrationTrace.map((s) => s.id));
+    expect(c.evidence).toEqual({ spanCount: 5, totalDurationMs: 120 });
+    expect(c.failure!.error).toContain("P2002");
+  });
+
+  test("a trace with no error exports every span and no failure", () => {
+    const c = buildContext(okTrace);
+    expect(c.failure).toBeNull();
+    expect(c.spans).toHaveLength(okTrace.length);
+  });
+
+  test("an empty selection is treated as the default", () => {
+    expect(buildContext(registrationTrace, [])).toEqual(buildContext(registrationTrace));
+  });
+
+  test("selected spans come out root-first, and failure is computed from the selection only", () => {
+    const [root, fetchSpan, http] = registrationTrace;
+    const c = buildContext(registrationTrace, [http.id, root.id]);
+    expect(c.executionPath).toEqual([root.name, http.name]);
+    expect(c.failure!.spanId).toBe(root.id); // http is ok; the deeper database error was not selected
+    expect(c.evidence.totalDurationMs).toBe(120);
+    expect(JSON.stringify(c)).not.toContain(fetchSpan.id);
+    expect(buildContext(registrationTrace, [http.id]).failure).toBeNull();
+  });
+
+  test("a response status is evidence, not an invented exception", () => {
+    const fetchSpan = buildContext(registrationTrace, [registrationTrace[1].id]);
+    expect(fetchSpan.spans[0].httpStatus).toBe(409);
+    expect(fetchSpan.failure!.error).toBeUndefined();
+    expect(fetchSpan.failure!.source).toBeUndefined();
+  });
+
+  test("only allowlisted fields are exported", () => {
+    const c = buildContext(registrationTrace);
+    expect(Object.keys(c.spans[4]).sort()).toEqual(["durationMs", "ingestSource", "kind", "name", "source", "spanId", "status"]);
+    expect(JSON.stringify(c)).not.toMatch(/"attributes"|"parentSpanId"|"startTime"/);
+  });
+
+  test("cyclic parent claims terminate", () => {
+    expect(buildContext(cyclicTrace).spans.length).toBeGreaterThan(0);
   });
 });

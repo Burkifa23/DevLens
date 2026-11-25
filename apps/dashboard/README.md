@@ -110,6 +110,35 @@ When the Origin was accepted, every response from step 4 on carries `Access-Cont
 - **What happens if the same batch is sent twice?** The SDKs retry once on network errors, so it does happen. The primary key `(projectId, id)` plus `skipDuplicates` stores each span once, and the first copy wins.
 - **What are the rate limiter's limits?** It's in memory, so it only works with one server instance and resets on restart. 600/minute is a demo default, not a measured capacity. The upgrade path is a shared counter in Postgres or Redis.
 
+## Trace list (Task 8)
+
+### How it works
+
+1. **There is no Trace table.** A trace is all the spans sharing a `traceId`, so the list is computed from `Span` on every read with one grouped SQL query (`listTraces` in `lib/traces.ts`).
+2. **One row per trace.** `GROUP BY "traceId"` gives, per trace: the name of the earliest span (`rootName`, usually the user action), the earliest start time, the duration (last span's end minus first span's start), the span count, and `hasError` (`bool_or(status = 'error')`).
+3. **Filters run on the groups.** "Errors only" keeps traces where any span failed; the search keeps traces where any span name contains the text (`ILIKE`, so case doesn't matter). Both are `HAVING` conditions, because they are about the whole trace, not one span.
+4. **Newest first, 50 per page.** "Older" passes the last row's start time as `before`, so the next page continues from there. The limit is capped at 100 so a crafted URL can't ask for a huge page.
+5. **The page** (`app/projects/[projectId]/page.tsx`) checks the session with `requireUserId()`, then ownership with `getOwnedProject()`: another user's project is a 404, the same as a missing one. Filters and paging live in the URL (a plain GET form and links), so a filtered view can be bookmarked and works without client JavaScript. Rows are a table on wide screens and cards on phones.
+6. **`getTraceSpans`** loads one trace's spans, oldest first, as the shared `StoredSpan` shape that the graph, timeline and AI export (Tasks 9–10) use. It filters by `projectId` and `traceId` together, so one project can never read another's spans.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `lib/traces.ts` | `listTraces` (grouped query, filters, paging) and `getTraceSpans` (row → `StoredSpan`) |
+| `app/projects/[projectId]/page.tsx` | The trace list page: filters, table/cards, empty state, "Older"/"Newest" |
+| `app/projects/[projectId]/error.tsx` | Error state when loading fails; never shows the error text |
+| `test/traces.test.ts` | Summary maths, filters, paging, search escaping, project isolation, `StoredSpan` mapping |
+
+### Viva questions
+
+- **Why compute traces with `GROUP BY` instead of storing a Trace table?** Spans arrive in separate batches from the browser and the server, in any order. A stored trace row would have to be updated on every batch and could disagree with its spans; grouping always reflects exactly what is stored.
+- **Is the raw SQL safe from injection?** Yes. Prisma's `$queryRaw` tagged template sends every `${value}` as a bound parameter, never as SQL text. The search text's `%`, `_` and `\` are also escaped, so searching for `%` matches a literal percent sign instead of everything.
+- **Why `HAVING` and not `WHERE` for "Errors only"?** `WHERE` filters single spans before grouping, so it would drop the OK spans and change the counts. `HAVING` filters whole traces after grouping: keep the trace if any of its spans failed.
+- **Which indexes make this fast?** `(projectId, startTime)` serves the newest-first list for one project; `(projectId, traceId)` serves `getTraceSpans`. Both start with `projectId`, because every query is scoped to one project.
+- **Why is `rootName` "the earliest span" and not "the span without a parent"?** It's the plan's rule, and simple. Limit: browser and server clocks can disagree, so a server span could look earlier than the click. Showing the parentless span instead would fix that.
+- **What does paging by `before` miss?** Two traces that start in the same millisecond on a page boundary could be skipped. Paging by (startTime, traceId) would fix it; for this MVP it's a documented limit.
+
 ## Trace graph (Task 9)
 
 ### How it works

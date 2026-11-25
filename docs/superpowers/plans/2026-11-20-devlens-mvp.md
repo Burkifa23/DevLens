@@ -456,7 +456,7 @@ test("only kind 'browser' is ever emitted", async () => {
   - `getTraceSpans(projectId: string, traceId: string): Promise<StoredSpan[]>` — maps DB rows to `StoredSpan`, retaining server-derived provenance (`sourceFile/sourceLine` → `source`).
 - Page: table of traces (status badge, root name, time, duration, span count), "Errors only" toggle, search box, "Older" pagination via `before`; all via search params. Empty and error states rendered. Responsive (cards under `md`).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```ts
 test("summarizes and filters traces", async () => {

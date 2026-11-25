@@ -6,13 +6,11 @@
  * may import this file. The browser must never build its own export or source links: one
  * server builder means one place to enforce sanitizing, authorization and provenance rules.
  *
- * STATUS: `sourceUrl` is implemented and tested (it needs no span contract). `buildContext`
- * is WAITING ON TASK 1 (the `StoredSpan` type and `sanitizeSpan` from @devlens/shared).
+ * (`server-only` isn't a dependency of this app, so this rule is enforced by review: Task 10's
+ * client components import `lib/trace-graph`, never this file.)
  */
-import type { SpanKind, SpanStatus, StoredSpan } from "@devlens/shared";
-// TODO(Task 1): enable once @devlens/shared exists. Used by buildContext.
-// import { sanitizeSpan } from "@devlens/shared";
-// import { failurePath } from "./trace-graph";
+import { sanitizeSpan, type SpanKind, type SpanStatus, type StoredSpan } from "@devlens/shared";
+import { failurePath, spanDepths } from "./trace-graph";
 
 /**
  * The exported investigation context: only diagnostic evidence, never raw request data.
@@ -55,28 +53,86 @@ export type InvestigationContext = {
  * - Formats `source` as "file:line", and only when it was captured.
  * - Adds `sourceUrl` only for `server-secret` spans, and only when `sourceUrl()` validates
  *   the repo, the commit and the path.
+ * - Copies fields one by one (an allowlist) and never spreads a span, so a new span field or
+ *   an arbitrary attribute can't slip into the export.
  *
- * TODO(Task 1) algorithm:
- *  1. chosen = selectedIds?.length ? spans filtered to those ids
- *             : failurePath(spans).length ? failurePath(spans) : spans.
- *     (An empty selection is rejected by the route; here it is treated as "use the default".)
- *  2. Sanitize each chosen span with sanitizeSpan.
- *  3. Order the chosen spans root-first (by depth, then startTime) to get executionPath.
- *  4. failure = the deepest error within chosen (ties → earliest startTime), or null.
- *  5. For each span: link = ingestSource === "server-secret"
- *       ? sourceUrl(repoUrl, attributes.commitSha as string, source) : undefined.
- *  6. evidence: spanCount = chosen.length; totalDurationMs = max(end) - min(start) over chosen.
- *  7. Build the result field by field (an allowlist; never spread a span object).
+ * An explicit empty selection is rejected by the route (400); here it is treated as "use the
+ * default", defensively. Depth is measured in the whole trace, so "deepest error" and
+ * "root-first" mean the same thing for a selection as they do for the full graph.
  */
 export function buildContext(
   spans: StoredSpan[],
   selectedIds?: string[],
   repoUrl?: string | null,
 ): InvestigationContext {
-  void spans;
-  void selectedIds;
-  void repoUrl;
-  throw new Error("buildContext: waiting on the Task 1 StoredSpan contract");
+  const clean = spans.map(sanitizeSpan);
+  const depths = spanDepths(clean);
+  const start = (s: StoredSpan) => Date.parse(s.startTime);
+
+  let chosen: StoredSpan[];
+  if (selectedIds && selectedIds.length > 0) {
+    const wanted = new Set(selectedIds);
+    chosen = clean.filter((s) => wanted.has(s.id));
+  } else {
+    const path = failurePath(clean);
+    chosen = path.length > 0 ? path : clean;
+  }
+  // Root-first: shallower spans first; among equals, the one that started first.
+  chosen = [...chosen].sort((a, b) => depths.get(a.id)! - depths.get(b.id)! || start(a) - start(b));
+
+  // The deepest error in the chosen spans (ties → earliest start), or null if none failed.
+  let failed: StoredSpan | undefined;
+  for (const span of chosen) {
+    if (span.status !== "error") continue;
+    if (!failed || depths.get(span.id)! > depths.get(failed.id)! ||
+        (depths.get(span.id) === depths.get(failed.id) && start(span) < start(failed))) failed = span;
+  }
+
+  const location = (s: StoredSpan) => (s.source ? `${s.source.file}:${s.source.line}` : undefined);
+  // Only server-key spans may produce links; browser-public source claims are shown as text only.
+  const link = (s: StoredSpan) => {
+    if (s.ingestSource !== "server-secret") return undefined;
+    const sha = s.attributes.commitSha;
+    return sourceUrl(repoUrl, typeof sha === "string" ? sha : undefined, s.source);
+  };
+  // Leave out keys whose value is undefined, so the JSON has no "source": undefined noise.
+  const defined = <T extends object>(o: T): T =>
+    Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+
+  const ends = chosen.map((s) => start(s) + s.durationMs);
+  const starts = chosen.map(start);
+
+  return {
+    traceId: clean[0]?.traceId ?? "",
+    failure: failed
+      ? defined({
+          spanId: failed.id,
+          operation: failed.name,
+          kind: failed.kind,
+          error: failed.errorMessage,
+          source: location(failed),
+          sourceUrl: link(failed),
+        })
+      : null,
+    executionPath: chosen.map((s) => s.name),
+    spans: chosen.map((s) =>
+      defined({
+        spanId: s.id,
+        ingestSource: s.ingestSource,
+        name: s.name,
+        kind: s.kind,
+        status: s.status,
+        durationMs: s.durationMs,
+        source: location(s),
+        sourceUrl: link(s),
+        httpStatus: typeof s.attributes.httpStatus === "number" ? s.attributes.httpStatus : undefined,
+      }),
+    ),
+    evidence: {
+      totalDurationMs: chosen.length > 0 ? Math.max(...ends) - Math.min(...starts) : 0,
+      spanCount: chosen.length,
+    },
+  };
 }
 
 /** Same rule as Task 3's createProject: exactly https://github.com/<owner>/<repo>. */

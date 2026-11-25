@@ -110,6 +110,39 @@ When the Origin was accepted, every response from step 4 on carries `Access-Cont
 - **What happens if the same batch is sent twice?** The SDKs retry once on network errors, so it does happen. The primary key `(projectId, id)` plus `skipDuplicates` stores each span once, and the first copy wins.
 - **What are the rate limiter's limits?** It's in memory, so it only works with one server instance and resets on restart. 600/minute is a demo default, not a measured capacity. The upgrade path is a shared counter in Postgres or Redis.
 
+## Trace graph (Task 9)
+
+### How it works
+
+The database stores a trace as a flat list of spans. Task 9 turns that list into what the explorer shows. Everything is a pure function: spans in, data out, with no database or React involved.
+
+1. **Building the tree** (`spanDepths`): each span's `parentSpanId` points at its parent. The function works out every span's depth: 0 for a root, 1 for its children, and so on. A span becomes a root (depth 0) when it has no parent, when its parent never arrived (for example, the browser batch was lost when the page closed), or when following parents leads round in a loop. Parent links are untrusted claims from SDKs, so a loop must not hang the page. Every walk keeps a "visited" set and stops on a repeat.
+2. **Failure path** (`failurePath`): finds the deepest span with `status: "error"`, then walks up its parents to the root. For the duplicate registration that is click → fetch → `POST /api/register` → `RegistrationService.registerUser` → `DemoUser.create`. The deepest error is a good place to start looking, but it isn't proof of the root cause.
+3. **Collapsing** (`defaultCollapsed`): traces with more than 50 spans start with every *successful* subtree collapsed. The branch that holds the error always stays open, so a 500-span trace shows about 20 nodes instead of 500.
+4. **Graph** (`toFlow`): picks the visible spans (skipping descendants of collapsed spans, or keeping only the failure path when "focus" is on). It then asks dagre to lay them out top to bottom as 240×64 boxes, and returns React Flow `nodes` and `edges`. Each node carries `orphan` (dashed border), `onFailurePath` (red) and `hiddenChildren` (the "+N" badge).
+5. **Timeline** (`toWaterfall`): the same tree in depth-first order, with each bar placed as a percentage of the whole trace's duration. Bars are at least 0.5% wide, so 0 ms spans can still be seen and clicked.
+6. **AI context** (`buildContext`, server only): picks the spans to export. That is the user's selection if there is one, otherwise the failure path, otherwise every span. It sanitizes them again, then copies only allowlisted fields into the JSON. It never includes raw attributes or unselected spans, and it never invents a source location.
+7. **Source links** (`sourceUrl`): builds `https://github.com/owner/repo/blob/<commit>/<file>#L<line>`, but only when the repo URL, a full 40-character commit SHA and a safe repo-relative path all check out. Only spans sent with the secret key (`server-secret`) can get a link.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `lib/trace-graph.ts` | `spanDepths`, `failurePath`, `defaultCollapsed`, `toFlow`, `toWaterfall`. Safe to import in client components |
+| `lib/context.ts` | `buildContext`, `sourceUrl`, `InvestigationContext`. Server only |
+| `test/fixtures/traces.ts` | Registration, network failure, server-only (orphan), OK, synthetic 500-span and cyclic traces. Owned with Member 1 |
+| `test/trace-graph.test.ts` | Failure path, orphans, collapsing, focus, layout, waterfall, cycles |
+| `test/context.test.ts` | Export shape, selection, sanitizing, provenance, source-link safety |
+
+### Viva questions
+
+- **What if the browser's spans never arrive?** The server's `http` span points at a parent that isn't in the trace. Instead of dropping it, it's drawn as a root with a dashed "orphan" border, so the server part of the story is still visible.
+- **Why can't a malicious parent link freeze the page?** Every walk up or down the tree tracks the ids it has seen and stops on a repeat, and a loop is cut into a root. Each span is processed a fixed number of times, so the work grows linearly with the number of spans.
+- **Why is the deepest error the "failure"?** Errors bubble up: the database throws, then the function, then the fetch is flagged. The deepest one is closest to where the problem started. It's where to look first, not proof of the cause.
+- **Why is the AI export built on the server and not in the browser?** One builder means one place that enforces authorization, sanitizing and the rule that only `server-secret` spans get source links. A browser copy could drift from it or be modified.
+- **Why does a browser span with a source never get a GitHub link?** Anyone holding the public key can send browser spans with any claimed file and line. A link would make a forged claim look like verified evidence.
+- **Why use dagre?** React Flow draws nodes where you tell it but doesn't arrange them. dagre computes a tidy top-to-bottom layout for a tree, so parents sit above their children.
+
 ## Design tokens
 
 Defined in `app/globals.css` and used as Tailwind classes, e.g. `text-status-error`, `bg-kind-database/10`.

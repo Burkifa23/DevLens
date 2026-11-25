@@ -1,4 +1,4 @@
-import { endSpan, safely, spanContext, startSpan, type ActiveSpan } from "./context";
+import { endSpan, prismaMessage, safely, spanContext, startSpan, type ActiveSpan } from "./context";
 import { sourceFromStack } from "./stack";
 
 /** What Prisma passes to a `$allOperations` query hook. */
@@ -59,17 +59,4 @@ export function instrumentPrisma<T extends PrismaClientLike>(client: T): T {
   };
   // Called as a method so Prisma's `$extends` keeps its `this`.
   return (client as unknown as { $extends(ext: typeof extension): T }).$extends(extension);
-}
-
-/**
- * Keeps only the Prisma error code and the final reason line. Prisma messages
- * can print the failing call with its arguments (user data) above the reason,
- * e.g. "Invalid `prisma.user.create()` invocation: { data: { email: … } } …
- * Unique constraint failed on the fields: (`email`)".
- */
-function prismaMessage(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  const reason = message.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? `${code}: ${reason}` : reason;
 }

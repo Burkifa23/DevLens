@@ -51,7 +51,7 @@ Use **static** names (`"POST /api/register"`, not `` `register ${email}` ``): na
    - A thrown exception is `error`, with its message and a `source` frame from its real stack, and is rethrown unchanged.
    - Function and Prisma spans are `error` whenever their code actually threw, even if the route later turns that into a 409.
 5. **Source locations** come from `sourceFromStack`, which takes the first stack frame inside `repoRoot`. It skips `node:` internals, `node_modules` and the SDK's own files, and returns a repo-relative path with `/` separators. If no frame qualifies, the field is omitted, never guessed.
-6. **Prisma spans** store only `{ model, operation }`, never query arguments. Prisma error messages can print the failing call with its arguments, so the SDK keeps only the error code and the last line, e.g. `P2002: Unique constraint failed on the fields: (`email`)`.
+6. **Prisma spans** store only `{ model, operation }`, never query arguments. Prisma error messages can print the failing call with its arguments, a code excerpt and the absolute file path. So any `PrismaClient*` error is recorded as only its code and last line, e.g. `P2002: Unique constraint failed on the constraint: \`User_email_key\``. This applies on every span it passes through (database, function and http), not just the database span.
 7. **Delivery.** When a span ends it is sanitized, serialized and queued. The wrapper then starts a flush without awaiting it. The exporter follows the fixed SDK delivery policy:
    - Holds at most 500 spans / 1 MiB, and drops spans over 16 KiB.
    - Sends at most 100 spans / 48 KiB per request, one request at a time, plus a 2 s timer.
@@ -72,6 +72,7 @@ Use **static** names (`"POST /api/register"`, not `` `register ${email}` ``): na
 | `src/stack.ts` | `sourceFromStack`: safe repo-relative source locations from V8 stack traces |
 | `src/exporter.ts` | `createExporter`: bounded queue, batching, timeout, retry, 429 pause |
 | `src/*.test.ts` | Vitest tests (fake `fetch`, fake timers, a stub Prisma client) |
+| `apps/dashboard/test/sdk-integration.test.ts` | Both SDKs against the real ingest endpoint and Postgres (run with the dashboard tests) |
 
 Run `pnpm --filter @devlens/sdk-node test`.
 
@@ -81,4 +82,5 @@ Run `pnpm --filter @devlens/sdk-node test`.
 - **What happens when the incoming `traceparent` is missing or malformed?** `parseTraceparent` returns `null` and the server starts a fresh trace. A forged but well-formed header is still accepted, which is why trace ids are a correlation hint and never authorization.
 - **A route catches a Prisma P2002 and returns 409. Which spans are red?** The database span, and the function span if the throw passed through it: they really threw. The `http` span stays `ok` with `httpStatus: 409`, because the server answered on purpose. The browser fetch span is flagged red as an unsuccessful request, without an invented exception.
 - **Why can't the SDK break the app?** Capture code is wrapped in `try/catch` and the original value or error is always returned or rethrown. Delivery is never awaited by the wrapper. `flush()` never rejects and gives up after two attempts within about 5 s. Memory is capped at 500 spans / 1 MiB. The cost is not zero, though: it is bounded CPU, memory and network.
-- **Why does the Prisma span keep only the last line of the error?** Prisma messages can echo the failing call with its arguments (e.g. an email). The plan forbids storing query arguments, so the SDK keeps the error code and the final reason line, and the server sanitizer redacts again.
+- **Why does the SDK keep only the last line of a Prisma error?** Prisma messages can echo the failing call with its arguments (e.g. an email), a code excerpt and the server's absolute path. The integration test caught this on a function span the error passed through. The plan forbids storing query arguments, so any `PrismaClient*` error, on any span, keeps only its code and final reason line, and the server sanitizer redacts again.
+- **Where do a failed registration's source locations point?** Verified against real Postgres: the database span points at the service line that awaited `prisma.user.create(…)`, from Prisma's error stack. The function span points at the line that called `span(…)`.

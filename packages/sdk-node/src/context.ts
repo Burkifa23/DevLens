@@ -99,8 +99,29 @@ export async function flush(): Promise<void> {
   await exporter?.flush();
 }
 
-/** Internal: the message of a thrown value; non-Errors are stringified. */
-export const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+/**
+ * Internal: the message to record for a thrown value. Prisma errors
+ * (`PrismaClient*`) are trimmed with {@link prismaMessage} wherever they are
+ * caught (database, function or http span); other values keep their message.
+ */
+export function messageOf(err: unknown): string {
+  if (err instanceof Error && err.name.startsWith("PrismaClient")) return prismaMessage(err);
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Internal: keeps only the Prisma error code and the final reason line.
+ * Prisma messages can print the failing call with its arguments (user data),
+ * a code excerpt and the absolute file path above the reason, e.g.
+ * "Invalid `prisma.user.create()` invocation in /srv/app/…/registration.ts:12:36 …
+ * Unique constraint failed on the constraint: `User_email_key`".
+ */
+export function prismaMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const reason = message.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? `${code}: ${reason}` : reason;
+}
 
 /**
  * Internal: runs telemetry code and swallows its failures. Capture bugs must

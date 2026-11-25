@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "vitest";
 import type { IngestBatch, Span } from "@devlens/shared";
 import { flush } from "./context";
-import { configure, instrumentPrisma, span } from "./index";
+import { configure, instrumentPrisma, span, withDevLens } from "./index";
 
 let bodies: IngestBatch[];
 const sent = (): Span[] => bodies.flatMap((b) => b.spans);
@@ -30,6 +30,7 @@ function stubClient(impl: (args: unknown) => Promise<unknown>) {
 
 /** Shaped like a Prisma P2002 error: Prisma prints the call and its arguments above the reason. */
 class FakeKnownRequestError extends Error {
+  name = "PrismaClientKnownRequestError";
   code = "P2002";
   constructor() {
     super(
@@ -71,6 +72,36 @@ test("a failed query is an error span with only the Prisma code and reason, and 
     errorMessage: "P2002: Unique constraint failed on the fields: (`email`)",
   });
   expect(JSON.stringify(sent())).not.toContain("a@b.co");
+});
+
+test("a Prisma error passing through span() and withDevLens is trimmed there too", async () => {
+  const err = new FakeKnownRequestError();
+  const prisma = instrumentPrisma(stubClient(() => Promise.reject(err)));
+  await expect(
+    withDevLens("POST /api/register", async () => {
+      await span("svc", () => prisma.user.create({ data: { email: "a@b.co" } }));
+      return new Response();
+    })(
+      new Request("http://localhost/api/register", { method: "POST" }),
+      {},
+    ),
+  ).rejects.toBe(err);
+  await flushed();
+  const expected = "P2002: Unique constraint failed on the fields: (`email`)";
+  expect(sent().map((s) => [s.kind, s.errorMessage])).toEqual([
+    ["database", expected],
+    ["function", expected],
+    ["http", expected],
+  ]);
+});
+
+test("a Prisma validation error (no code) keeps only its reason line", async () => {
+  const err = Object.assign(new Error('Invalid `prisma.user.create()` invocation:\n\n{\n  data: { name: "Ada" }\n}\n\nArgument `email` is missing.'), {
+    name: "PrismaClientValidationError",
+  });
+  await expect(span("svc", () => Promise.reject(err))).rejects.toBe(err);
+  await flushed();
+  expect(sent()[0]!.errorMessage).toBe("Argument `email` is missing.");
 });
 
 test("database spans are children of the current span", async () => {
